@@ -3,15 +3,14 @@
 Future Mindset — Telegram-бот для записи на консультации
 Стиль и визаж | Онлайн по всей России
 
-Для Render.com: Flask health-check + polling в отдельном потоке
+WEBHOOK-версия для Render.com — нет конфликтов, стабильно 24/7
 """
 
 import os
-import asyncio
 import logging
-import threading
+import asyncio
 from datetime import datetime
-from flask import Flask
+from flask import Flask, request, jsonify
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -25,6 +24,10 @@ from telegram.ext import (
 
 BOT_TOKEN = "8733901363:AAENe2LFHFg1cCl0WSdPgjLWfHq5aL2YWYk"
 ADMIN_ID = 716337525
+
+# URL вашего сервиса на Render (замените если другой)
+WEBHOOK_URL = "https://futuremindset-bot-1.onrender.com"
+WEBHOOK_PATH = "/webhook"
 
 SERVICES = {
     "style": {
@@ -258,51 +261,37 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ═══════════════════════════════════════════════════════════════
-# БОТ — POLLING В ОТДЕЛЬНОМ ПОТОКЕ
+# СОЗДАНИЕ ПРИЛОЖЕНИЯ
 # ═══════════════════════════════════════════════════════════════
 
-async def bot_main():
-    logger.info("🤖 Бот Future Mindset запущен!")
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            CHOOSING_SERVICE: [CallbackQueryHandler(service_choice, pattern="^service:")],
-            ENTERING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
-            ENTERING_PHONE: [
-                MessageHandler(filters.CONTACT, enter_phone_contact),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone_text)
-            ],
-            ENTERING_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_city)],
-            ENTERING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_comment)],
-            CONFIRMING: [
-                CallbackQueryHandler(confirm_yes, pattern="^confirm:yes$"),
-                CallbackQueryHandler(confirm_restart, pattern="^confirm:restart$")
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=True,
-    )
-    
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(admin_accept, pattern="^admin:accept:"))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown_message))
-    
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(drop_pending_updates=True)
-    
-    # Держим бота запущенным
-    stop_event = asyncio.Event()
-    await stop_event.wait()
+application = Application.builder().token(BOT_TOKEN).build()
 
-def run_bot():
-    asyncio.run(bot_main())
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        CHOOSING_SERVICE: [CallbackQueryHandler(service_choice, pattern="^service:")],
+        ENTERING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
+        ENTERING_PHONE: [
+            MessageHandler(filters.CONTACT, enter_phone_contact),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone_text)
+        ],
+        ENTERING_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_city)],
+        ENTERING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_comment)],
+        CONFIRMING: [
+            CallbackQueryHandler(confirm_yes, pattern="^confirm:yes$"),
+            CallbackQueryHandler(confirm_restart, pattern="^confirm:restart$")
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+    per_message=True,
+)
+
+application.add_handler(conv_handler)
+application.add_handler(CallbackQueryHandler(admin_accept, pattern="^admin:accept:"))
+application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown_message))
 
 # ═══════════════════════════════════════════════════════════════
-# FLASK — HEALTH CHECK ДЛЯ RENDER
+# FLASK + WEBHOOK
 # ═══════════════════════════════════════════════════════════════
 
 app = Flask(__name__)
@@ -315,14 +304,40 @@ def health():
 def health_detailed():
     return {"status": "ok", "bot": "futuremindset_bot"}
 
+@app.route(WEBHOOK_PATH, methods=['POST'])
+def webhook():
+    """Принимаем обновления от Telegram"""
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.process_update(update))
+    loop.close()
+    
+    return jsonify({"ok": True})
+
 # ═══════════════════════════════════════════════════════════════
 # ЗАПУСК
 # ═══════════════════════════════════════════════════════════════
 
+def setup_webhook():
+    """Устанавливаем webhook при старте"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Удаляем старый webhook и устанавливаем новый
+    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+    loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL + WEBHOOK_PATH))
+    
+    logger.info(f"✅ Webhook установлен: {WEBHOOK_URL + WEBHOOK_PATH}")
+    loop.close()
+
 if __name__ == '__main__':
-    # Запускаем бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    setup_webhook()
+    
+    port = int(os.environ.get('PORT', 10000))
+    logger.info(f"🌐 Flask запущен на порту {port}")
+    app.run(host='0.0.0.0', port=port)
     
     # Запускаем Flask на порту из переменной окружения (Render задаёт PORT)
     port = int(os.environ.get('PORT', 10000))
