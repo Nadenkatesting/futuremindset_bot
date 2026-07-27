@@ -3,19 +3,19 @@
 Future Mindset — Telegram-бот для записи на консультации
 Стиль и визаж | Онлайн по всей России
 
-WEBHOOK-версия для Render.com — ИСПРАВЛЕННАЯ
+Упрощённая версия: polling в фоне + Flask health-check
 """
 
 import os
 import logging
-import asyncio
+import threading
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ConversationHandler, filters, ContextTypes
+    MessageHandler, filters, ContextTypes
 )
 
 # ═══════════════════════════════════════════════════════════════
@@ -24,10 +24,6 @@ from telegram.ext import (
 
 BOT_TOKEN = "8733901363:AAENe2LFHFg1cCl0WSdPgjLWfHq5aL2YWYk"
 ADMIN_ID = 716337525
-
-# URL вашего сервиса на Render — ЗАМЕНИТЕ если другой!
-WEBHOOK_URL = "https://futuremindset-bot-1-j5ft.onrender.com"
-WEBHOOK_PATH = "/webhook"
 
 SERVICES = {
     "style": {
@@ -50,8 +46,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-(CHOOSING_SERVICE, ENTERING_NAME, ENTERING_PHONE, ENTERING_CITY,
- ENTERING_COMMENT, CONFIRMING) = range(6)
+# ═══════════════════════════════════════════════════════════════
+# КЛАВИАТУРЫ
+# ═══════════════════════════════════════════════════════════════
 
 def main_menu_kb():
     return InlineKeyboardMarkup([
@@ -83,7 +80,11 @@ def contact_kb():
 # ═══════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало диалога"""
     user = update.effective_user
+    context.user_data.clear()
+    context.user_data["state"] = "menu"
+    
     await update.message.reply_html(
         f"Привет, {user.first_name}! 👋\n\n"
         f"Добро пожаловать в <b>Future Mindset</b> — пространство стиля и красоты.\n\n"
@@ -91,101 +92,128 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Выберите услугу ниже 👇",
         reply_markup=main_menu_kb()
     )
-    return CHOOSING_SERVICE
 
-async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
+    data = query.data
     
-    service_key = query.data.split(":")[1]
-    service = SERVICES[service_key]
+    if data.startswith("service:"):
+        service_key = data.split(":")[1]
+        service = SERVICES[service_key]
+        
+        context.user_data["service_key"] = service_key
+        context.user_data["service_name"] = service["name"]
+        context.user_data["service_price"] = service["price"]
+        context.user_data["state"] = "waiting_name"
+        
+        text = (
+            f"✨ <b>{service['name']}</b>\n"
+            f"💰 Стоимость: <b>{service['price']}</b>\n"
+            f"⏱ Длительность: {service['duration']}\n"
+            f"📦 Входит: {service['description']}\n\n"
+            f"Отличный выбор! Теперь расскажите немного о себе.\n\n"
+            f"Как вас зовут? (имя, которым удобно обращаться)"
+        )
+        await query.edit_message_text(text, parse_mode="HTML")
     
-    context.user_data["service_key"] = service_key
-    context.user_data["service_name"] = service["name"]
-    context.user_data["service_price"] = service["price"]
+    elif data == "confirm:yes":
+        await send_booking(update, context)
     
-    text = (
-        f"✨ <b>{service['name']}</b>\n"
-        f"💰 Стоимость: <b>{service['price']}</b>\n"
-        f"⏱ Длительность: {service['duration']}\n"
-        f"📦 Входит: {service['description']}\n\n"
-        f"Отличный выбор! Теперь расскажите немного о себе.\n\n"
-        f"Как вас зовут? (имя, которым удобно обращаться)"
-    )
+    elif data == "confirm:restart":
+        context.user_data.clear()
+        context.user_data["state"] = "menu"
+        await query.edit_message_text(
+            "Давайте начнём сначала! Выберите услугу:",
+            reply_markup=main_menu_kb()
+        )
     
-    await query.edit_message_text(text, parse_mode="HTML")
-    return ENTERING_NAME
+    elif data.startswith("admin:accept:"):
+        await admin_accept(update, context)
 
-async def enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text.strip()
-    await update.message.reply_text(
-        "Отлично! Теперь отправьте ваш номер телефона:",
-        reply_markup=contact_kb()
-    )
-    return ENTERING_PHONE
-
-async def enter_phone_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["phone"] = update.message.contact.phone_number
-    await update.message.reply_text(
-        "📍 Из какого вы города? (это поможет подобрать магазины и бренды)",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ENTERING_CITY
-
-async def enter_phone_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["phone"] = update.message.text.strip()
-    await update.message.reply_text(
-        "📍 Из какого вы города?",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ENTERING_CITY
-
-async def enter_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["city"] = update.message.text.strip()
-    await update.message.reply_text(
-        "💬 Есть ли у вас особые пожелания или вопросы перед консультацией?\n"
-        "(можно написать кратко или отправить «нет»)",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ENTERING_COMMENT
-
-async def enter_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    comment = update.message.text.strip()
-    context.user_data["comment"] = comment if comment.lower() not in ("нет", "-", "no") else "—"
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений по состоянию"""
+    state = context.user_data.get("state", "menu")
+    text = update.message.text.strip()
     
-    data = context.user_data
+    if state == "waiting_name":
+        context.user_data["name"] = text
+        context.user_data["state"] = "waiting_phone"
+        await update.message.reply_text(
+            "Отлично! Теперь отправьте ваш номер телефона:",
+            reply_markup=contact_kb()
+        )
     
-    summary = (
-        f"📋 <b>Проверьте вашу заявку:</b>\n\n"
-        f"👤 Имя: <b>{data['name']}</b>\n"
-        f"📱 Телефон: <code>{data['phone']}</code>\n"
-        f"📍 Город: {data['city']}\n"
-        f"💄 Услуга: <b>{data['service_name']}</b>\n"
-        f"💰 Стоимость: {data['service_price']}\n"
-        f"💬 Комментарий: {data['comment']}\n\n"
-        f"Всё верно?"
-    )
+    elif state == "waiting_phone":
+        context.user_data["phone"] = text
+        context.user_data["state"] = "waiting_city"
+        await update.message.reply_text(
+            "📍 Из какого вы города? (это поможет подобрать магазины и бренды)",
+            reply_markup=ReplyKeyboardRemove()
+        )
     
-    await update.message.reply_html(summary, reply_markup=confirm_kb())
-    return CONFIRMING
+    elif state == "waiting_city":
+        context.user_data["city"] = text
+        context.user_data["state"] = "waiting_comment"
+        await update.message.reply_text(
+            "💬 Есть ли у вас особые пожелания или вопросы перед консультацией?\n"
+            "(можно написать кратко или отправить «нет»)",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    
+    elif state == "waiting_comment":
+        context.user_data["comment"] = text if text.lower() not in ("нет", "-", "no") else "—"
+        context.user_data["state"] = "confirming"
+        
+        data = context.user_data
+        summary = (
+            f"📋 <b>Проверьте вашу заявку:</b>\n\n"
+            f"👤 Имя: <b>{data['name']}</b>\n"
+            f"📱 Телефон: <code>{data['phone']}</code>\n"
+            f"📍 Город: {data['city']}\n"
+            f"💄 Услуга: <b>{data['service_name']}</b>\n"
+            f"💰 Стоимость: {data['service_price']}\n"
+            f"💬 Комментарий: {data['comment']}\n\n"
+            f"Всё верно?"
+        )
+        await update.message.reply_html(summary, reply_markup=confirm_kb())
+    
+    else:
+        await update.message.reply_text(
+            "Я не совсем понял 😊\n"
+            "Давайте начнём с выбора услуги:",
+            reply_markup=main_menu_kb()
+        )
 
-async def confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка отправки контакта"""
+    state = context.user_data.get("state", "")
+    
+    if state == "waiting_phone":
+        context.user_data["phone"] = update.message.contact.phone_number
+        context.user_data["state"] = "waiting_city"
+        await update.message.reply_text(
+            "📍 Из какого вы города? (это поможет подобрать магазины и бренды)",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+async def send_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправка заявки админу"""
     query = update.callback_query
-    await query.answer()
-    
     data = context.user_data
     user = query.from_user
     
     admin_text = (
         f"🔔 <b>НОВАЯ ЗАЯВКА!</b>\n{'═' * 30}\n\n"
-        f"👤 <b>Клиент:</b> {data['name']}\n"
-        f"📱 <b>Телефон:</b> <code>{data['phone']}</code>\n"
-        f"📍 <b>Город:</b> {data['city']}\n"
+        f"👤 <b>Клиент:</b> {data.get('name', '—')}\n"
+        f"📱 <b>Телефон:</b> <code>{data.get('phone', '—')}</code>\n"
+        f"📍 <b>Город:</b> {data.get('city', '—')}\n"
         f"🆔 <b>Telegram:</b> @{user.username or 'нет username'}\n"
         f"🔗 <b>ID:</b> <code>{user.id}</code>\n\n"
-        f"💄 <b>Услуга:</b> {data['service_name']}\n"
-        f"💰 <b>Стоимость:</b> {data['service_price']}\n"
-        f"💬 <b>Комментарий:</b> {data['comment']}\n\n"
+        f"💄 <b>Услуга:</b> {data.get('service_name', '—')}\n"
+        f"💰 <b>Стоимость:</b> {data.get('service_price', '—')}\n"
+        f"💬 <b>Комментарий:</b> {data.get('comment', '—')}\n\n"
         f"⏰ <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
     
@@ -197,34 +225,25 @@ async def confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(
             f"✅ <b>Заявка отправлена!</b>\n\n"
-            f"Спасибо, {data['name']}! Наденька получила вашу заявку на <b>{data['service_name']}</b>.\n"
+            f"Спасибо, {data.get('name', '')}! Наденька получила вашу заявку на <b>{data.get('service_name', '')}</b>.\n"
             f"Свяжется с вами в течение <b>2 часов</b>.\n\n"
-            f"📱 Ваш телефон: <code>{data['phone']}</code>\n"
-            f"💰 К оплате: <b>{data['service_price']}</b>\n\n"
+            f"📱 Ваш телефон: <code>{data.get('phone', '')}</code>\n"
+            f"💰 К оплате: <b>{data.get('service_price', '')}</b>\n\n"
             f"Если есть вопросы — пишите: @iwownadenka",
             parse_mode="HTML"
         )
         
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error(f"Ошибка отправки: {e}")
         await query.edit_message_text(
             "⚠️ Произошла ошибка. Напишите напрямую: @iwownadenka",
             parse_mode="HTML"
         )
     
-    return ConversationHandler.END
-
-async def confirm_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
     context.user_data.clear()
-    await query.edit_message_text(
-        "Давайте начнём сначала! Выберите услугу:",
-        reply_markup=main_menu_kb()
-    )
-    return CHOOSING_SERVICE
 
 async def admin_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админ принял заявку"""
     query = update.callback_query
     if query.from_user.id != ADMIN_ID:
         await query.answer("⛔ Нет доступа", show_alert=True)
@@ -246,52 +265,19 @@ async def admin_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text(
-        "Диалог отменён. Начните заново — /start",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ConversationHandler.END
-
-async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Я не совсем понял 😊\nДавайте начнём с выбора услуги:",
-        reply_markup=main_menu_kb()
-    )
-
 # ═══════════════════════════════════════════════════════════════
 # СОЗДАНИЕ ПРИЛОЖЕНИЯ
 # ═══════════════════════════════════════════════════════════════
 
 application = Application.builder().token(BOT_TOKEN).build()
 
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        CHOOSING_SERVICE: [CallbackQueryHandler(service_choice, pattern="^service:")],
-        ENTERING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
-        ENTERING_PHONE: [
-            MessageHandler(filters.CONTACT, enter_phone_contact),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone_text)
-        ],
-        ENTERING_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_city)],
-        ENTERING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_comment)],
-        CONFIRMING: [
-            CallbackQueryHandler(confirm_yes, pattern="^confirm:yes$"),
-            CallbackQueryHandler(confirm_restart, pattern="^confirm:restart$")
-        ]
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-    per_message=True,
-)
-
-application.add_handler(conv_handler)
-application.add_handler(CallbackQueryHandler(admin_accept, pattern="^admin:accept:"))
-application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown_message))
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(button_handler))
+application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
 # ═══════════════════════════════════════════════════════════════
-# FLASK + WEBHOOK
+# FLASK — HEALTH CHECK
 # ═══════════════════════════════════════════════════════════════
 
 app = Flask(__name__)
@@ -304,54 +290,21 @@ def health():
 def health_detailed():
     return {"status": "ok", "bot": "futuremindset_bot"}
 
-@app.route(WEBHOOK_PATH, methods=['POST'])
-def webhook():
-    """Принимаем обновления от Telegram"""
-    json_data = request.get_json(force=True)
-    logger.info(f"📩 Получен webhook: {json_data.get('update_id', 'N/A')}")
-    
-    update = Update.de_json(json_data, application.bot)
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(application.process_update(update))
-        logger.info("✅ Обновление обработано")
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки: {e}")
-    finally:
-        loop.close()
-    
-    return jsonify({"ok": True})
-
 # ═══════════════════════════════════════════════════════════════
 # ЗАПУСК
 # ═══════════════════════════════════════════════════════════════
 
-def setup_webhook():
-    """Инициализация приложения и установка webhook"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    # 🔥 ОБЯЗАТЕЛЬНО: инициализируем и запускаем приложение
-    loop.run_until_complete(application.initialize())
-    loop.run_until_complete(application.start())
-    
-    # Удаляем старый webhook и устанавливаем новый
-    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
-    loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL + WEBHOOK_PATH))
-    
-    logger.info(f"✅ Webhook установлен: {WEBHOOK_URL + WEBHOOK_PATH}")
-    loop.close()
+def run_bot():
+    """Запуск бота в фоновом потоке"""
+    logger.info("🤖 Запуск polling бота...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
-    setup_webhook()
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
     
-    port = int(os.environ.get('PORT', 10000))
-    logger.info(f"🌐 Flask запущен на порту {port}")
-    app.run(host='0.0.0.0', port=port)
-    
-    # Запускаем Flask на порту из переменной окружения (Render задаёт PORT)
+    # Запускаем Flask
     port = int(os.environ.get('PORT', 10000))
     logger.info(f"🌐 Flask health-check на порту {port}")
     app.run(host='0.0.0.0', port=port)
