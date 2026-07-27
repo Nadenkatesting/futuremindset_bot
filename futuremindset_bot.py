@@ -26,7 +26,7 @@ BOT_TOKEN = "8733901363:AAENe2LFHFg1cCl0WSdPgjLWfHq5aL2YWYk"
 ADMIN_ID = 716337525
 
 # URL вашего сервиса на Render (замените если другой)
-WEBHOOK_URL = "https://futuremindset-bot-1.onrender.com"
+WEBHOOK_URL = "futuremindset-bot-1-j5ft.onrender.com"
 WEBHOOK_PATH = "/webhook"
 
 SERVICES = {
