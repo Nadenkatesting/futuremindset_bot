@@ -3,7 +3,7 @@
 Future Mindset — Telegram-бот для записи на консультации
 Стиль и визаж | Онлайн по всей России
 
-WEBHOOK-версия для Render.com — нет конфликтов, стабильно 24/7
+WEBHOOK-версия для Render.com — ИСПРАВЛЕННАЯ
 """
 
 import os
@@ -25,8 +25,8 @@ from telegram.ext import (
 BOT_TOKEN = "8733901363:AAENe2LFHFg1cCl0WSdPgjLWfHq5aL2YWYk"
 ADMIN_ID = 716337525
 
-# URL вашего сервиса на Render (замените если другой)
-WEBHOOK_URL = "futuremindset-bot-1-j5ft.onrender.com"
+# URL вашего сервиса на Render — ЗАМЕНИТЕ если другой!
+WEBHOOK_URL = "https://futuremindset-bot-1-j5ft.onrender.com"
 WEBHOOK_PATH = "/webhook"
 
 SERVICES = {
@@ -307,12 +307,20 @@ def health_detailed():
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
     """Принимаем обновления от Telegram"""
-    update = Update.de_json(request.get_json(force=True), application.bot)
+    json_data = request.get_json(force=True)
+    logger.info(f"📩 Получен webhook: {json_data.get('update_id', 'N/A')}")
+    
+    update = Update.de_json(json_data, application.bot)
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.process_update(update))
-    loop.close()
+    try:
+        loop.run_until_complete(application.process_update(update))
+        logger.info("✅ Обновление обработано")
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки: {e}")
+    finally:
+        loop.close()
     
     return jsonify({"ok": True})
 
@@ -321,9 +329,13 @@ def webhook():
 # ═══════════════════════════════════════════════════════════════
 
 def setup_webhook():
-    """Устанавливаем webhook при старте"""
+    """Инициализация приложения и установка webhook"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
+    # 🔥 ОБЯЗАТЕЛЬНО: инициализируем и запускаем приложение
+    loop.run_until_complete(application.initialize())
+    loop.run_until_complete(application.start())
     
     # Удаляем старый webhook и устанавливаем новый
     loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
