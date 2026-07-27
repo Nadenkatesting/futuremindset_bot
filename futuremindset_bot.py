@@ -2,35 +2,23 @@
 """
 Future Mindset — Telegram-бот для записи на консультации
 Стиль и визаж | Онлайн по всей России
-
-Установка:
-    pip install -r requirements.txt
-
-Запуск:
-    python futuremindset_bot.py
 """
 
-import asyncio
 import logging
 from datetime import datetime
 
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command, CommandStart
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
-    ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ConversationHandler, filters, ContextTypes
 )
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 
 # ═══════════════════════════════════════════════════════════════
 # НАСТРОЙКИ
 # ═══════════════════════════════════════════════════════════════
 
 BOT_TOKEN = "8733901363:AAENe2LFHFg1cCl0WSdPgjLWfHq5aL2YWYk"
-ADMIN_ID = 716337525  # Nadenka Kasianenko
+ADMIN_ID = 716337525
 
 SERVICES = {
     "style": {
@@ -47,152 +35,62 @@ SERVICES = {
     }
 }
 
-# ═══════════════════════════════════════════════════════════════
-# ЛОГИРОВАНИЕ
-# ═══════════════════════════════════════════════════════════════
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════
-# FSM — МАШИНА СОСТОЯНИЙ
-# ═══════════════════════════════════════════════════════════════
+(CHOOSING_SERVICE, ENTERING_NAME, ENTERING_PHONE, ENTERING_CITY,
+ ENTERING_COMMENT, CONFIRMING) = range(6)
 
-class BookingState(StatesGroup):
-    choosing_service = State()
-    entering_name = State()
-    entering_phone = State()
-    entering_city = State()
-    entering_comment = State()
-    confirming = State()
-
-# ═══════════════════════════════════════════════════════════════
-# ИНИЦИАЛИЗАЦИЯ
-# ═══════════════════════════════════════════════════════════════
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-
-# ═══════════════════════════════════════════════════════════════
-# КЛАВИАТУРЫ
-# ═══════════════════════════════════════════════════════════════
-
-def main_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="👗 Консультация по стилю — 4 900 ₽",
-                callback_data="service:style"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="💄 Консультация по визажу — 3 900 ₽",
-                callback_data="service:makeup"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="❓ Задать вопрос",
-                url="https://t.me/iwownadenka"
-            )
-        ]
+def main_menu_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👗 Консультация по стилю — 4 900 ₽", callback_data="service:style")],
+        [InlineKeyboardButton("💄 Консультация по визажу — 3 900 ₽", callback_data="service:makeup")],
+        [InlineKeyboardButton("❓ Задать вопрос", url="https://t.me/iwownadenka")]
     ])
 
-def confirm_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Всё верно, записаться", callback_data="confirm:yes"),
-            InlineKeyboardButton(text="🔄 Заполнить заново", callback_data="confirm:restart")
-        ]
+def confirm_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Всё верно, записаться", callback_data="confirm:yes"),
+         InlineKeyboardButton("🔄 Заполнить заново", callback_data="confirm:restart")]
     ])
 
-def admin_kb(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✅ Принять заявку",
-                callback_data=f"admin:accept:{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="💬 Написать клиенту",
-                url=f"tg://user?id={user_id}"
-            )
-        ]
+def admin_kb(user_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Принять заявку", callback_data=f"admin:accept:{user_id}"),
+         InlineKeyboardButton("💬 Написать клиенту", url=f"tg://user?id={user_id}")]
     ])
 
-def contact_kb() -> ReplyKeyboardMarkup:
+def contact_kb():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True
+        [[KeyboardButton("📱 Отправить номер", request_contact=True)]],
+        resize_keyboard=True, one_time_keyboard=True
     )
 
-# ═══════════════════════════════════════════════════════════════
-# ОБРАБОТЧИКИ КОМАНД
-# ═══════════════════════════════════════════════════════════════
-
-@dp.message(CommandStart())
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-
-    welcome_text = (
-        f"Привет, {message.from_user.first_name}! 👋\n\n"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_html(
+        f"Привет, {user.first_name}! 👋\n\n"
         f"Добро пожаловать в <b>Future Mindset</b> — пространство стиля и красоты.\n\n"
         f"Я помогу записать вас на онлайн-консультацию.\n"
-        f"Выберите услугу ниже 👇"
+        f"Выберите услугу ниже 👇",
+        reply_markup=main_menu_kb()
     )
+    return CHOOSING_SERVICE
 
-    await message.answer(
-        welcome_text,
-        reply_markup=main_menu_kb(),
-        parse_mode="HTML"
-    )
-
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    await message.answer(
-        "📋 <b>Как это работает:</b>\n\n"
-        "1️⃣ Выберите услугу\n"
-        "2️⃣ Оставьте контакты\n"
-        "3️⃣ Наденька свяжется с вами в течение 2 часов\n"
-        "4️⃣ Согласуем удобное время для Zoom-консультации\n\n"
-        "❓ По вопросам пишите: @iwownadenka",
-        parse_mode="HTML"
-    )
-
-@dp.message(Command("admin"))
-async def cmd_admin(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ У вас нет доступа.")
-        return
-
-    await message.answer(
-        "👩‍💼 <b>Панель администратора</b>\n\n"
-        "Команды:\n"
-        "/stats — статистика заявок\n"
-        "/broadcast — рассылка сообщений",
-        parse_mode="HTML"
-    )
-
-# ═══════════════════════════════════════════════════════════════
-# INLINE КНОПКИ
-# ═══════════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data.startswith("service:"))
-async def process_service_choice(callback: types.CallbackQuery, state: FSMContext):
-    service_key = callback.data.split(":")[1]
+async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    service_key = query.data.split(":")[1]
     service = SERVICES[service_key]
-
-    await state.update_data(
-        service_key=service_key,
-        service_name=service["name"],
-        service_price=service["price"]
-    )
-
+    
+    context.user_data["service_key"] = service_key
+    context.user_data["service_name"] = service["name"]
+    context.user_data["service_price"] = service["price"]
+    
     text = (
         f"✨ <b>{service['name']}</b>\n"
         f"💰 Стоимость: <b>{service['price']}</b>\n"
@@ -201,65 +99,49 @@ async def process_service_choice(callback: types.CallbackQuery, state: FSMContex
         f"Отличный выбор! Теперь расскажите немного о себе.\n\n"
         f"Как вас зовут? (имя, которым удобно обращаться)"
     )
+    
+    await query.edit_message_text(text, parse_mode="HTML")
+    return ENTERING_NAME
 
-    await callback.message.edit_text(text, parse_mode="HTML")
-    await state.set_state(BookingState.entering_name)
-    await callback.answer()
-
-# ═══════════════════════════════════════════════════════════════
-# СБОР ДАННЫХ (FSM)
-# ═══════════════════════════════════════════════════════════════
-
-@dp.message(BookingState.entering_name)
-async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
-
-    await message.answer(
-        "Отлично! Теперь отправьте ваш номер телефона, чтобы Наденька могла с вами связаться:",
+async def enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Отлично! Теперь отправьте ваш номер телефона:",
         reply_markup=contact_kb()
     )
-    await state.set_state(BookingState.entering_phone)
+    return ENTERING_PHONE
 
-@dp.message(BookingState.entering_phone, F.contact)
-async def process_phone_contact(message: types.Message, state: FSMContext):
-    phone = message.contact.phone_number
-    await state.update_data(phone=phone)
-
-    await message.answer(
+async def enter_phone_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["phone"] = update.message.contact.phone_number
+    await update.message.reply_text(
         "📍 Из какого вы города? (это поможет подобрать магазины и бренды)",
         reply_markup=ReplyKeyboardRemove()
     )
-    await state.set_state(BookingState.entering_city)
+    return ENTERING_CITY
 
-@dp.message(BookingState.entering_phone)
-async def process_phone_text(message: types.Message, state: FSMContext):
-    phone = message.text.strip()
-    await state.update_data(phone=phone)
-
-    await message.answer(
-        "📍 Из какого вы города? (это поможет подобрать магазины и бренды)",
+async def enter_phone_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["phone"] = update.message.text.strip()
+    await update.message.reply_text(
+        "📍 Из какого вы города?",
         reply_markup=ReplyKeyboardRemove()
     )
-    await state.set_state(BookingState.entering_city)
+    return ENTERING_CITY
 
-@dp.message(BookingState.entering_city)
-async def process_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text.strip())
-
-    await message.answer(
+async def enter_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["city"] = update.message.text.strip()
+    await update.message.reply_text(
         "💬 Есть ли у вас особые пожелания или вопросы перед консультацией?\n"
         "(можно написать кратко или отправить «нет»)",
         reply_markup=ReplyKeyboardRemove()
     )
-    await state.set_state(BookingState.entering_comment)
+    return ENTERING_COMMENT
 
-@dp.message(BookingState.entering_comment)
-async def process_comment(message: types.Message, state: FSMContext):
-    comment = message.text.strip()
-    await state.update_data(comment=comment if comment.lower() not in ("нет", "-", "no") else "—")
-
-    data = await state.get_data()
-
+async def enter_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    comment = update.message.text.strip()
+    context.user_data["comment"] = comment if comment.lower() not in ("нет", "-", "no") else "—"
+    
+    data = context.user_data
+    
     summary = (
         f"📋 <b>Проверьте вашу заявку:</b>\n\n"
         f"👤 Имя: <b>{data['name']}</b>\n"
@@ -270,22 +152,19 @@ async def process_comment(message: types.Message, state: FSMContext):
         f"💬 Комментарий: {data['comment']}\n\n"
         f"Всё верно?"
     )
+    
+    await update.message.reply_html(summary, reply_markup=confirm_kb())
+    return CONFIRMING
 
-    await message.answer(summary, parse_mode="HTML", reply_markup=confirm_kb())
-    await state.set_state(BookingState.confirming)
-
-# ═══════════════════════════════════════════════════════════════
-# ПОДТВЕРЖДЕНИЕ ЗАЯВКИ
-# ═══════════════════════════════════════════════════════════════
-
-@dp.callback_query(BookingState.confirming, F.data == "confirm:yes")
-async def confirm_booking(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    user = callback.from_user
-
+async def confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = context.user_data
+    user = query.from_user
+    
     admin_text = (
-        f"🔔 <b>НОВАЯ ЗАЯВКА!</b>\n"
-        f"{'═' * 30}\n\n"
+        f"🔔 <b>НОВАЯ ЗАЯВКА!</b>\n{'═' * 30}\n\n"
         f"👤 <b>Клиент:</b> {data['name']}\n"
         f"📱 <b>Телефон:</b> <code>{data['phone']}</code>\n"
         f"📍 <b>Город:</b> {data['city']}\n"
@@ -294,97 +173,109 @@ async def confirm_booking(callback: types.CallbackQuery, state: FSMContext):
         f"💄 <b>Услуга:</b> {data['service_name']}\n"
         f"💰 <b>Стоимость:</b> {data['service_price']}\n"
         f"💬 <b>Комментарий:</b> {data['comment']}\n\n"
-        f"⏰ <b>Время заявки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"⏰ <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
-
+    
     try:
-        await bot.send_message(
-            ADMIN_ID,
-            admin_text,
-            parse_mode="HTML",
+        await context.bot.send_message(
+            ADMIN_ID, admin_text, parse_mode="HTML",
             reply_markup=admin_kb(user.id)
         )
-
-        await callback.message.edit_text(
-            "✅ <b>Заявка отправлена!</b>\n\n"
+        
+        await query.edit_message_text(
+            f"✅ <b>Заявка отправлена!</b>\n\n"
             f"Спасибо, {data['name']}! Наденька получила вашу заявку на <b>{data['service_name']}</b>.\n"
-            f"Свяжется с вами в течение <b>2 часов</b> для согласования времени консультации.\n\n"
+            f"Свяжется с вами в течение <b>2 часов</b>.\n\n"
             f"📱 Ваш телефон: <code>{data['phone']}</code>\n"
             f"💰 К оплате: <b>{data['service_price']}</b>\n\n"
-            f"Если есть срочные вопросы — пишите: @iwownadenka",
+            f"Если есть вопросы — пишите: @iwownadenka",
             parse_mode="HTML"
         )
-
+        
     except Exception as e:
-        logger.error(f"Ошибка отправки админу: {e}")
-        await callback.message.edit_text(
-            "⚠️ Произошла ошибка при отправке заявки. Пожалуйста, напишите напрямую: @iwownadenka",
+        logger.error(f"Ошибка: {e}")
+        await query.edit_message_text(
+            "⚠️ Произошла ошибка. Напишите напрямую: @iwownadenka",
             parse_mode="HTML"
         )
+    
+    return ConversationHandler.END
 
-    await state.clear()
-    await callback.answer()
-
-@dp.callback_query(BookingState.confirming, F.data == "confirm:restart")
-async def restart_booking(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text(
+async def confirm_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.edit_message_text(
         "Давайте начнём сначала! Выберите услугу:",
         reply_markup=main_menu_kb()
     )
-    await callback.answer()
+    return CHOOSING_SERVICE
 
-# ═══════════════════════════════════════════════════════════════
-# АДМИН
-# ═══════════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data.startswith("admin:accept:"))
-async def admin_accept(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
+async def admin_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("⛔ Нет доступа", show_alert=True)
         return
-
-    user_id = int(callback.data.split(":")[2])
-
+    await query.answer()
+    user_id = int(query.data.split(":")[2])
     try:
-        await bot.send_message(
+        await context.bot.send_message(
             user_id,
             "✅ <b>Ваша заявка принята!</b>\n\n"
-            "Наденька свяжется с вами в ближайшее время для уточнения деталей и отправки ссылки на Zoom.\n"
+            "Наденька свяжется с вами для уточнения деталей и отправки ссылки на Zoom.\n"
             "Спасибо за доверие! 💕",
             parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"Не удалось уведомить клиента {user_id}: {e}")
-
-    await callback.message.edit_text(
-        callback.message.text + "\n\n✅ <b>Заявка принята</b>",
+    await query.edit_message_text(
+        query.message.text + "\n\n✅ <b>Заявка принята</b>",
         parse_mode="HTML"
     )
-    await callback.answer("Клиент уведомлён")
 
-# ═══════════════════════════════════════════════════════════════
-# НЕИЗВЕСТНЫЕ СООБЩЕНИЯ
-# ═══════════════════════════════════════════════════════════════
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Диалог отменён. Начните заново — /start",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
 
-@dp.message()
-async def unknown_message(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
+async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Я не совсем понял 😊\nДавайте начнём с выбора услуги:",
+        reply_markup=main_menu_kb()
+    )
 
-    if current_state is None:
-        await message.answer(
-            "Я не совсем понял 😊\n"
-            "Давайте начнём с выбора услуги:",
-            reply_markup=main_menu_kb()
-        )
-
-# ═══════════════════════════════════════════════════════════════
-# ЗАПУСК
-# ═══════════════════════════════════════════════════════════════
-
-async def main():
+def main():
     logger.info("🤖 Бот Future Mindset запущен!")
-    await dp.start_polling(bot)
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSING_SERVICE: [CallbackQueryHandler(service_choice, pattern="^service:")],
+            ENTERING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
+            ENTERING_PHONE: [
+                MessageHandler(filters.CONTACT, enter_phone_contact),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone_text)
+            ],
+            ENTERING_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_city)],
+            ENTERING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_comment)],
+            CONFIRMING: [
+                CallbackQueryHandler(confirm_yes, pattern="^confirm:yes$"),
+                CallbackQueryHandler(confirm_restart, pattern="^confirm:restart$")
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(admin_accept, pattern="^admin:accept:"))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown_message))
+    
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
