@@ -2,11 +2,16 @@
 """
 Future Mindset — Telegram-бот для записи на консультации
 Стиль и визаж | Онлайн по всей России
+
+Для Render.com: Flask health-check + polling в отдельном потоке
 """
 
+import os
 import asyncio
 import logging
+import threading
 from datetime import datetime
+from flask import Flask
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -253,10 +258,10 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ═══════════════════════════════════════════════════════════════
-# ЗАПУСК — ИСПРАВЛЕННЫЙ ДЛЯ PYTHON 3.14
+# БОТ — POLLING В ОТДЕЛЬНОМ ПОТОКЕ
 # ═══════════════════════════════════════════════════════════════
 
-async def main():
+async def bot_main():
     logger.info("🤖 Бот Future Mindset запущен!")
     
     application = Application.builder().token(BOT_TOKEN).build()
@@ -285,7 +290,6 @@ async def main():
     application.add_handler(CallbackQueryHandler(admin_accept, pattern="^admin:accept:"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown_message))
     
-    # Исправленный запуск для Python 3.14
     await application.initialize()
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
@@ -294,5 +298,33 @@ async def main():
     stop_event = asyncio.Event()
     await stop_event.wait()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def run_bot():
+    asyncio.run(bot_main())
+
+# ═══════════════════════════════════════════════════════════════
+# FLASK — HEALTH CHECK ДЛЯ RENDER
+# ═══════════════════════════════════════════════════════════════
+
+app = Flask(__name__)
+
+@app.route('/')
+def health():
+    return "Future Mindset Bot is running! 💕"
+
+@app.route('/health')
+def health_detailed():
+    return {"status": "ok", "bot": "futuremindset_bot"}
+
+# ═══════════════════════════════════════════════════════════════
+# ЗАПУСК
+# ═══════════════════════════════════════════════════════════════
+
+if __name__ == '__main__':
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем Flask на порту из переменной окружения (Render задаёт PORT)
+    port = int(os.environ.get('PORT', 10000))
+    logger.info(f"🌐 Flask health-check на порту {port}")
+    app.run(host='0.0.0.0', port=port)
