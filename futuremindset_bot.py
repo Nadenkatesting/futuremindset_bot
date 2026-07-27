@@ -3,14 +3,14 @@
 Future Mindset — Telegram-бот для записи на консультации
 Стиль и визаж | Онлайн по всей России
 
-Упрощённая версия: polling в фоне + Flask health-check
+Polling + Flask health-check. Webhook-заглушка для старых запросов.
 """
 
 import os
 import logging
 import threading
 from datetime import datetime
-from flask import Flask
+from flask import Flask, request, jsonify
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -80,7 +80,6 @@ def contact_kb():
 # ═══════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало диалога"""
     user = update.effective_user
     context.user_data.clear()
     context.user_data["state"] = "menu"
@@ -88,13 +87,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         f"Привет, {user.first_name}! 👋\n\n"
         f"Добро пожаловать в <b>Future Mindset</b> — пространство стиля и красоты.\n\n"
-        f"Я помогу записать вас на онлайн-консультацию.\n"
+        f"Я помогу записать вас на консультацию.\n"
         f"Выберите услугу ниже 👇",
         reply_markup=main_menu_kb()
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -133,7 +131,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admin_accept(update, context)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстовых сообщений по состоянию"""
     state = context.user_data.get("state", "menu")
     text = update.message.text.strip()
     
@@ -157,7 +154,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["city"] = text
         context.user_data["state"] = "waiting_comment"
         await update.message.reply_text(
-            "💬 Есть ли у вас особые пожелания или вопросы перед консультацией?\n"
+            "💬 Есть ли у вас особые пожелания или вопросы?\n"
             "(можно написать кратко или отправить «нет»)",
             reply_markup=ReplyKeyboardRemove()
         )
@@ -187,7 +184,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка отправки контакта"""
     state = context.user_data.get("state", "")
     
     if state == "waiting_phone":
@@ -199,7 +195,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def send_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка заявки админу"""
     query = update.callback_query
     data = context.user_data
     user = query.from_user
@@ -225,7 +220,7 @@ async def send_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(
             f"✅ <b>Заявка отправлена!</b>\n\n"
-            f"Спасибо, {data.get('name', '')}! Наденька получила вашу заявку на <b>{data.get('service_name', '')}</b>.\n"
+            f"Спасибо, {data.get('name', '')}! Надежда получила вашу заявку на <b>{data.get('service_name', '')}</b>.\n"
             f"Свяжется с вами в течение <b>2 часов</b>.\n\n"
             f"📱 Ваш телефон: <code>{data.get('phone', '')}</code>\n"
             f"💰 К оплате: <b>{data.get('service_price', '')}</b>\n\n"
@@ -243,7 +238,6 @@ async def send_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
 
 async def admin_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Админ принял заявку"""
     query = update.callback_query
     if query.from_user.id != ADMIN_ID:
         await query.answer("⛔ Нет доступа", show_alert=True)
@@ -254,7 +248,7 @@ async def admin_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             user_id,
             "✅ <b>Ваша заявка принята!</b>\n\n"
-            "Наденька свяжется с вами для уточнения деталей и отправки ссылки на Zoom.\n"
+            "Надежда свяжется с вами для уточнения деталей.\n"
             "Спасибо за доверие! 💕",
             parse_mode="HTML"
         )
@@ -277,7 +271,7 @@ application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
 # ═══════════════════════════════════════════════════════════════
-# FLASK — HEALTH CHECK
+# FLASK — HEALTH CHECK + ЗАГЛУШКА WEBHOOK
 # ═══════════════════════════════════════════════════════════════
 
 app = Flask(__name__)
@@ -289,6 +283,11 @@ def health():
 @app.route('/health')
 def health_detailed():
     return {"status": "ok", "bot": "futuremindset_bot"}
+
+@app.route('/webhook', methods=['POST'])
+def webhook_stub():
+    """Заглушка: Telegram всё ещё шлёт сюда от старого webhook"""
+    return jsonify({"ok": True})
 
 # ═══════════════════════════════════════════════════════════════
 # ЗАПУСК
