@@ -4,6 +4,7 @@ Future Mindset — Telegram-бот для записи на консультац
 Стиль и визаж | Онлайн по всей России
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -68,6 +69,10 @@ def contact_kb():
         [[KeyboardButton("📱 Отправить номер", request_contact=True)]],
         resize_keyboard=True, one_time_keyboard=True
     )
+
+# ═══════════════════════════════════════════════════════════════
+# ОБРАБОТЧИКИ
+# ═══════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -247,7 +252,11 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_kb()
     )
 
-def main():
+# ═══════════════════════════════════════════════════════════════
+# ЗАПУСК — ИСПРАВЛЕННЫЙ ДЛЯ PYTHON 3.14
+# ═══════════════════════════════════════════════════════════════
+
+async def main():
     logger.info("🤖 Бот Future Mindset запущен!")
     
     application = Application.builder().token(BOT_TOKEN).build()
@@ -269,13 +278,21 @@ def main():
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=True,
     )
     
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(admin_accept, pattern="^admin:accept:"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown_message))
     
-    application.run_polling()
+    # Исправленный запуск для Python 3.14
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(drop_pending_updates=True)
+    
+    # Держим бота запущенным
+    stop_event = asyncio.Event()
+    await stop_event.wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
